@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+pdfplumber
+httpx2==2.16.0
+reportlab==5.1.0
+
+python-multipart
