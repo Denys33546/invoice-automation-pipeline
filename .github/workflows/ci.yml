@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Code quality and tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run Ruff lint
+        run: ruff check api
+
+      - name: Check formatting
+        run: ruff format --check api
+
+      - name: Run tests with coverage
+        run: pytest --cov=api/app --cov-report=term-missing
+
+      - name: Validate n8n workflow JSON
+        run: python -m json.tool n8n/workflows/invoice_pipeline.json > /dev/null
+
+      - name: Build API Docker image
+        run: docker build -f api/Dockerfile -t invoice-automation-api:ci .
