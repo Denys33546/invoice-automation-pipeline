@@ -1,0 +1,330 @@
+{
+  "name": "Invoice pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Invoice pipeline\n1. A PDF invoice arrives at the webhook\n2. The extractor API reads it and checks the numbers\n3. **Valid:** answer `processed`\n4. **Problem:** e-mail the accountant, answer `needs_review`",
+        "height": 190,
+        "width": 380,
+        "color": 4
+      },
+      "id": "076d39f7-9eb7-50fe-98fe-61f011bc2ef5",
+      "name": "Note: how it works",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Credentials to create\n- **Extractor API key** (Header Auth): name `X-API-Key`, value = `EXTRACTOR_API_KEY` from `.env`\n- **Mailpit** (SMTP): host `mailpit`, port `1025`, any user and password, SSL off",
+        "height": 190,
+        "width": 380,
+        "color": 3
+      },
+      "id": "2df3d325-b44c-555e-814f-d8e4b6100a1f",
+      "name": "Note: credentials",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        380,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "invoices",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "37008c02-fe13-587a-8db0-7ac69b3ff470",
+      "name": "Receive invoice",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "62a1f627-3fc3-5300-9add-87683545dfad"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/extract",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "={{ Object.keys($binary)[0] }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "df7ce6ab-2cbe-522f-bc31-33e37bfb64e7",
+      "name": "Extract invoice data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "8fbd7d47-4984-50a4-a52a-b32b1ea989eb",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "65293641-d425-5dcf-9d19-f6e6d8e0c77b",
+      "name": "Is the invoice valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7eef9b32-e0a6-563f-83c3-d3faf6142c50",
+              "name": "status",
+              "value": "processed",
+              "type": "string"
+            },
+            {
+              "id": "3de09da4-e92a-5bbf-83da-8865b28f160f",
+              "name": "source",
+              "value": "={{ $json.source }}",
+              "type": "string"
+            },
+            {
+              "id": "67d4799f-b7a1-5526-b4a2-aecfd0db89b5",
+              "name": "number",
+              "value": "={{ $json.number }}",
+              "type": "string"
+            },
+            {
+              "id": "d29fcd90-aaf9-5003-ac4a-1a9e343fa320",
+              "name": "vendor",
+              "value": "={{ $json.vendor }}",
+              "type": "string"
+            },
+            {
+              "id": "6399ebee-a837-56ed-9fad-c789dc0bd9be",
+              "name": "total",
+              "value": "={{ $json.total }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "295ce959-048c-52f3-b57a-349d2d1da490",
+      "name": "Prepare answer: processed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        760,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "5bc15d74-4dc8-50bf-b5b5-38451daac742",
+      "name": "Respond: processed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1010,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "invoices@pipeline.local",
+        "toEmail": "accountant@pipeline.local",
+        "subject": "={{ \"Invoice needs review: \" + ($json.source || \"unknown file\") }}",
+        "emailFormat": "text",
+        "text": "={{ \"File: \" + $json.source + \"\\nInvoice number: \" + ($json.number ?? \"not found\") + \"\\nVendor: \" + ($json.vendor ?? \"not found\") + \"\\nTotal: \" + ($json.total ?? \"not found\") + \"\\n\\nProblems:\\n- \" + $json.warnings.join(\"\\n- \") }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "357b5e9c-971d-51fd-be7d-6d2dcfee536e",
+      "name": "Email: invoice needs review",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        760,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "312c4ead-0fe0-5c53-884e-a0af8fc47036",
+              "name": "status",
+              "value": "needs_review",
+              "type": "string"
+            },
+            {
+              "id": "b2c480c2-71f2-5c87-b236-d7de7a4488cd",
+              "name": "source",
+              "value": "={{ $('Extract invoice data').first().json.source }}",
+              "type": "string"
+            },
+            {
+              "id": "b07bdebd-df05-5f91-8682-aa080784b1ec",
+              "name": "warnings",
+              "value": "={{ $('Extract invoice data').first().json.warnings }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "500bd0f8-1b2d-5aba-9098-194b55e036ff",
+      "name": "Prepare answer: needs review",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1010,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "6682d972-8548-5a0c-ae00-d8c1016e6dd0",
+      "name": "Respond: needs review",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1260,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Receive invoice": {
+      "main": [
+        [
+          {
+            "node": "Extract invoice data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract invoice data": {
+      "main": [
+        [
+          {
+            "node": "Is the invoice valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is the invoice valid?": {
+      "main": [
+        [
+          {
+            "node": "Prepare answer: processed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Email: invoice needs review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare answer: processed": {
+      "main": [
+        [
+          {
+            "node": "Respond: processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email: invoice needs review": {
+      "main": [
+        [
+          {
+            "node": "Prepare answer: needs review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare answer: needs review": {
+      "main": [
+        [
+          {
+            "node": "Respond: needs review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
