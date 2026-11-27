@@ -1,0 +1,13 @@
+{
+  "name": "invoice-pipeline-workflow-checks",
+  "private": true,
+  "description": "Checks the n8n workflow against the node definitions of the n8n version used in docker-compose.yml",
+  "scripts": {
+    "validate": "node validate_workflow.js ../workflows/invoice_pipeline.json"
+  },
+  "dependencies": {
+    "n8n-core": "2.44.4",
+    "n8n-nodes-base": "2.44.5",
+    "n8n-workflow": "2.44.2"
+  }
+}
