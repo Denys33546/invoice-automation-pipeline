@@ -2,53 +2,26 @@
 
 [![CI](https://github.com/Denys33546/invoice-automation-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/Denys33546/invoice-automation-pipeline/actions/workflows/ci.yml)
 
-Reads PDF invoices, checks that the numbers add up, and sends problem invoices to a person for review.
-
-An **n8n** workflow receives the invoice, a **FastAPI** service extracts the data and validates the math, and the workflow decides what happens next:
-
-- **Valid invoice** → the pipeline answers `processed`.
-- **Problem found** (wrong total, missing date, unreadable file…) → an email with the list of problems goes to the accountant, and the pipeline answers `needs_review`.
-
-Everything runs locally with one command through Docker Compose.
+A local invoice-processing example built with **n8n** and **FastAPI**. Submit a PDF to the n8n webhook; the API extracts invoice fields and checks the arithmetic. Valid invoices return `processed`. Invoices with missing or inconsistent data return `needs_review` and trigger an email to the configured reviewer. The default local setup catches those emails in Mailpit.
 
 ## How it works
 
-```
-PDF invoice
-    │  POST /webhook/invoices
-    ▼
-┌─────────┐   POST /extract    ┌──────────────────┐
-│  n8n    │ ─────────────────► │  Extractor API   │
-│workflow │ ◄───────────────── │  (FastAPI)       │
-└────┬────┘   JSON + warnings  └──────────────────┘
-     │
-     ├── valid   → respond "processed"
-     └── invalid → email the accountant (Mailpit) → respond "needs_review"
+```text
+PDF → n8n webhook → FastAPI extractor
+                         ├─ valid   → processed
+                         └─ problem → email via Mailpit → needs_review
 ```
 
-The extractor pulls out the invoice number, date, vendor, customer, line items, subtotal, tax and total. Then it checks:
+The extractor reads the invoice number, date, vendor, customer, line items, subtotal, tax, and total. It checks quantity × unit price for each line, the sum of line amounts against the subtotal, and subtotal + tax against the total. Amounts use `Decimal` and are returned as strings with two decimal places.
 
-- quantity × unit price = line amount, for every line;
-- sum of the lines = subtotal;
-- subtotal + tax = total.
+## Requirements
 
-Money is handled with `Decimal` (no floating-point errors) and returned as strings with two decimals, for example `"84.24"`.
-
-## Tech stack
-
-| Part | Technology |
-|---|---|
-| Extractor API | Python 3.12, FastAPI, pdfplumber, pydantic |
-| Workflow | n8n |
-| Test mail server | Mailpit |
-| Packaging | Docker, Docker Compose |
-| Quality | pytest (28 tests), ruff, GitHub Actions |
+- Docker with the Docker Compose plugin (`docker compose`)
+- Open ports on localhost: `8010`, `5678`, and `8025`
 
 ## Quick start
 
-You need [Docker](https://docs.docker.com/get-docker/) with Docker Compose.
-
-**1. Clone and create the settings file**
+Clone the repository and create a local environment file:
 
 ```bash
 git clone https://github.com/Denys33546/invoice-automation-pipeline.git
@@ -56,38 +29,42 @@ cd invoice-automation-pipeline
 cp .env.example .env
 ```
 
-**2. Put real secrets into `.env`**
+Generate two secrets and replace the placeholder values in `.env`:
 
 ```bash
-openssl rand -hex 32   # use the output as EXTRACTOR_API_KEY
-openssl rand -hex 32   # use the output as N8N_ENCRYPTION_KEY
+openssl rand -hex 32
+openssl rand -hex 32
 ```
 
-Keep `N8N_ENCRYPTION_KEY`: without it the credentials saved inside n8n are lost.
+Use one value for `EXTRACTOR_API_KEY` and the other for `N8N_ENCRYPTION_KEY`. Keep the encryption key: n8n uses it to protect saved credentials, and changing or losing it can make those credentials unusable.
 
-**3. Start everything**
+Start the services:
 
 ```bash
 docker compose up -d --build
 ```
 
-| Service | Address |
+| Service | Local address |
 |---|---|
-| Extractor API (interactive docs) | http://localhost:8010/docs |
+| Extractor API docs | http://localhost:8010/docs |
 | n8n | http://localhost:5678 |
-| Mailpit (caught emails) | http://localhost:8025 |
+| Mailpit inbox | http://localhost:8025 |
 
-All ports are bound to `127.0.0.1`, so nothing is exposed to your network.
+Compose binds these ports to `127.0.0.1`. The n8n workflow is inactive until imported and activated.
 
-## Try the extractor API directly
+To stop the services, run `docker compose down`. The n8n data volume is retained; add `-v` only if you also want to delete that saved data.
+
+## Call the extractor API
+
+The API accepts a multipart form field named `file` at `/extract`. With the Compose setup, provide the API key from `.env`:
 
 ```bash
 curl -X POST http://localhost:8010/extract \
-  -H "X-API-Key: <your EXTRACTOR_API_KEY>" \
+  -H "X-API-Key: <EXTRACTOR_API_KEY>" \
   -F "file=@samples/invoice_0001.pdf"
 ```
 
-Response for a correct invoice:
+A valid sample returns fields like these:
 
 ```json
 {
@@ -108,90 +85,87 @@ Response for a correct invoice:
 }
 ```
 
-A problem invoice is **not** an HTTP error. The API answers `200` with `"valid": false` and explains what is wrong:
+Invoice problems are returned in a normal `200` response with `valid: false` and explanatory `warnings`; they are not HTTP errors. A missing or incorrect key returns `401`, and an upload over the configured size limit returns `413`. `/health` is public and returns `{"status":"ok"}`.
 
-```json
-{
-  "source": "problem_wrong_total.pdf",
-  "valid": false,
-  "number": "INV-9001",
-  "total": "99.00",
-  "warnings": ["Subtotal + tax is 22.60, but the total is 99.00"]
-}
-```
+## Run the n8n workflow
 
-(Other fields are shortened here.) The API answers `401` for a wrong or missing API key and `413` for a file over the size limit.
+1. Open n8n at http://localhost:5678 and complete its initial setup if prompted.
+2. Import `n8n/workflows/invoice_pipeline.json` using **Workflows → Import from file**.
+3. Create the credentials referenced by the workflow:
+   - **Header Auth**: header name `X-API-Key`, value set to `EXTRACTOR_API_KEY` from `.env`.
+   - **SMTP**: host `mailpit`, port `1025`, any username and password, SSL disabled.
+4. Save and activate the workflow.
 
-## Run the full pipeline in n8n
-
-**1. Import the workflow.** In n8n choose *Workflows → Import from file* and select `n8n/workflows/invoice_pipeline.json`.
-
-**2. Create two credentials:**
-
-- **Extractor API key** (type *Header Auth*): name `X-API-Key`, value = `EXTRACTOR_API_KEY` from your `.env`.
-- **Mailpit** (type *SMTP*): host `mailpit`, port `1025`, any user and password, SSL off.
-
-**3. Activate the workflow, then send an invoice:**
+Send a valid invoice to the active webhook:
 
 ```bash
 curl -X POST http://localhost:5678/webhook/invoices \
   -F "file=@samples/invoice_0001.pdf"
 ```
 
-A valid invoice returns `processed`. To see the review path, send one of the invoices with a deliberate problem:
+The response has `status: "processed"`. To exercise the review branch, send a sample with an incorrect total:
 
 ```bash
 curl -X POST http://localhost:5678/webhook/invoices \
-  -F "file=@n8n/workflows/problem_wrong_total.pdf"
+  -F "file=@samples/problem_wrong_total.pdf"
 ```
 
-The answer is `needs_review`, and the email with the list of problems appears in Mailpit at http://localhost:8025.
+This returns `status: "needs_review"`; the workflow sends a message that can be viewed in Mailpit at http://localhost:8025. The sample with the missing date is `samples/problem_missing_date.pdf`; a non-PDF test file is `samples/problem_not_a_pdf.pdf`.
 
-## Settings
+## Configuration
 
-Variables read by the API (prefix `EXTRACTOR_`):
+The API reads environment variables with the `EXTRACTOR_` prefix. The Compose file passes `EXTRACTOR_API_KEY` and requires it to be set. The other variables below have application defaults; the Compose file does not currently forward overrides for them.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `EXTRACTOR_API_KEY` | empty | Key required in the `X-API-Key` header. Empty means authentication is off. Docker Compose requires it to be set. |
-| `EXTRACTOR_MAX_UPLOAD_MB` | `10` | Maximum upload size. |
-| `EXTRACTOR_MAX_PAGES` | `20` | Maximum number of pages per PDF. |
+| Variable | Default | Description |
+|---|---:|---|
+| `EXTRACTOR_API_KEY` | empty | Required key for the `X-API-Key` header when set. An empty key disables API-key checking. Compose requires a non-empty value. |
+| `EXTRACTOR_MAX_UPLOAD_MB` | `10` | Maximum upload size in MiB. |
+| `EXTRACTOR_MAX_PAGES` | `20` | Maximum PDF page count. |
 
 ## Development
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
+The API requires Python 3.12. From the repository root:
 
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-dev.txt
+uvicorn app.main:app --app-dir api --reload
+```
+
+The local API listens on port `8000`. To enable API-key checking, set `EXTRACTOR_API_KEY` in the shell before starting it. Run the quality checks with:
+
+```bash
 ruff check api
 ruff format --check api
 pytest --cov=api/app
 ```
 
-The same checks run in GitHub Actions on every push and pull request, together with a validation of the n8n workflow JSON and a Docker image build.
+For an already running API, `scripts/smoke_test.sh` checks health and sample extraction. It accepts an optional base URL and API key; for example, `scripts/smoke_test.sh http://localhost:8010 YOUR_API_KEY`.
 
-## Limitations
+GitHub Actions runs Ruff, formatting checks, pytest with coverage, JSON parsing of the n8n workflow, and a Docker image build on pushes to `main` and pull requests targeting `main`.
 
-- Works with **text-based PDFs**. Scanned documents (images) are not supported; there is no OCR, and the API reports this clearly.
-- The parser expects a specific invoice layout: an item table with the header `Description / Qty / Unit Price / Amount`, a date in `YYYY-MM-DD` format, and a `Bill To:` line. Other layouts need small changes to the patterns in `api/app/extractor.py`.
-- The email step uses Mailpit, a local test inbox. For real use, replace it with your SMTP server in the n8n credentials.
-- Meant to run locally or behind your own HTTPS. `N8N_SECURE_COOKIE=false` in `docker-compose.yml` is for local HTTP only; remove it behind HTTPS.
+## Supported invoice format
 
-## Project structure
+- The parser handles text-based PDFs. Scanned/image-only PDFs are not OCR processed and are reported with a warning.
+- The supported layout uses an item table with the columns `Description`, `Qty`, `Unit Price`, and `Amount`; a date in `YYYY-MM-DD` format; and a `Bill To:` line.
+- The parser expects the invoice number, subtotal, tax, and total labels/layouts implemented in `api/app/extractor.py`. Other formats may need parser changes.
+- Mailpit is a local test inbox. For real email delivery, configure the n8n SMTP credential to use an appropriate mail server.
+- Compose sets `N8N_SECURE_COOKIE=false` for local HTTP. The configuration must be adjusted when deploying behind HTTPS.
 
+## Project layout
+
+```text
+api/app/                    FastAPI routes, settings, parsing, and response models
+api/tests/                  API and settings tests
+n8n/workflows/              Importable workflow and problem invoice samples
+n8n/checks/                 Workflow validation script and its Node dependencies
+samples/                    Example invoices for API and workflow requests
+scripts/                    Sample generator and API smoke test
+.github/workflows/ci.yml    GitHub Actions checks
+docker-compose.yml          API, n8n, and Mailpit services
 ```
-api/                    FastAPI extractor (app/, tests/, Dockerfile)
-n8n/workflows/          n8n workflow and invoices with deliberate problems
-samples/                sample valid invoices
-scripts/                helper script that generates problem invoices
-docker-compose.yml      api + n8n + Mailpit
-.github/workflows/      CI
-```
-
-## Need this for your invoices?
-
-I adapt the pipeline to your invoice layouts and connect it to your tools (email, Google Sheets, accounting software). Contact me: _add your LinkedIn or email here_.
 
 ## License
 
-_Add a license (for example MIT) and a `LICENSE` file._
+This repository does not currently contain a `LICENSE` file, so its reuse and distribution terms are unspecified.
